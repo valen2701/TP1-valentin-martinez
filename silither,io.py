@@ -20,6 +20,10 @@ font_title_lg = pygame.font.SysFont("consolas", 90, bold=True)
 title_text   = "SLITHER.IO"
 title_anim_t = 0.0
 
+foods = []
+FOOD_RADIUS = 6
+FOOD_AMOUNT = 100
+
 WAYPOINTS = [
     (80,   155),
     (1200, 155),
@@ -29,18 +33,28 @@ WAYPOINTS = [
 wp_idx      = 0
 snake_x     = float(WAYPOINTS[0][0])
 snake_y     = float(WAYPOINTS[0][1])
-SNAKE_SPEED = 220.0  
+SNAKE_SPEED = 220.0
 
 
 SNAKE_TRAIL    = deque(maxlen=70)
 TRAIL_TIMER    = 0.0
-TRAIL_INTERVAL = 0.03  
+TRAIL_INTERVAL = 0.03
+
+WORLD_W, WORLD_H = 3000, 3000
 
 def handle_input():
-    keys        = pygame.key.get_pressed()
-    mouse_pos   = pygame.mouse.get_pos()
-    mouse_click = pygame.mouse.get_pressed()
-    return keys, mouse_pos, mouse_click
+    keys = pygame.key.get_pressed()
+    mouse_pos = pygame.mouse.get_pos()
+    mouse_click = False
+
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT:
+            return keys, mouse_pos, False, False
+
+        if event.type == pygame.MOUSEBUTTONDOWN:
+            mouse_click = True
+
+    return keys, mouse_pos, mouse_click, True
 
 def draw_background(surface):
     for y in range(SCREEN_H):
@@ -57,20 +71,29 @@ def draw_text(surface, text, font, color, pos):
     label = font.render(text, True, color)
     surface.blit(label, pos)
 
-def handle_events():
-    for event in pygame.event.get():
-        if event.type == pygame.QUIT:
-            return False
-    return True
+def spawn_food():
+    margin = 40
+    x = random.randint(40, WORLD_W - 40)
+    y = random.randint(40, WORLD_H - 40)
+
+    color = (
+        random.randint(100, 255),
+        random.randint(100, 255),
+        random.randint(100, 255)
+    )
+
+    foods.append([x, y, color])
 
 def draw_button(surface, text, x, y, w, h, mouse_pos, mouse_click):
     rect = pygame.Rect(x, y, w, h)
+
     if rect.collidepoint(mouse_pos):
         color = (60, 60, 60)
-        if mouse_click[0]:
+        if mouse_click:
             return True
     else:
         color = (30, 30, 30)
+
     pygame.draw.rect(surface, color, rect)
     pygame.draw.rect(surface, (255, 255, 255), rect, 2)
     draw_text(surface, text, font_med, (255, 255, 255), (x + 50, y + 12))
@@ -188,33 +211,47 @@ players          = []
 
 running = True
 while running:
-    dt      = clock.tick(60) / 1000.0
-    running = handle_events()
-    keys, mouse_pos, mouse_click = handle_input()
+    dt = clock.tick(60) / 1000.0
+    keys, mouse_pos, mouse_click, running = handle_input()
 
     if game_state == "menu":
         title_anim_t += dt
         update_menu_snake(dt)
         action = draw_menu(screen, mouse_pos, mouse_click)
+
         if action == "play":
+            pygame.event.clear()
             game_state = "player_select"
 
     elif game_state == "player_select":
         action = draw_player_select_menu(screen, mouse_pos, mouse_click)
+
         if action == "1":
+            pygame.event.clear()
             num_players = 1
-            game_state  = "game"
+            game_state = "game"
+
         elif action == "2":
+            pygame.event.clear()
             num_players = 2
-            game_state  = "game"
+            game_state = "game"
 
     elif game_state == "game":
+
         if not game_initialized:
             players = []
             for i in range(num_players):
                 color = [(0, 255, 0), (255, 0, 0)][i] if i < 2 else (0, 0, 255)
-                players.append({'pos': [SCREEN_W // 2 + i * 100, SCREEN_H // 2],
-                                'color': color, 'radius': 20})
+                players.append({
+                    'pos': [WORLD_W // 2 + i * 100, WORLD_H // 2],
+                    'color': color,
+                    'radius': 20
+                })
+
+            foods.clear()
+            for _ in range(FOOD_AMOUNT):
+                spawn_food()
+
             game_initialized = True
 
         for i, player in enumerate(players):
@@ -229,9 +266,37 @@ while running:
                 if keys[pygame.K_UP]:    player['pos'][1] -= 5
                 if keys[pygame.K_DOWN]:  player['pos'][1] += 5
 
-        draw_background(screen)
         for player in players:
-            draw_circle(screen, player['color'], player['pos'], player['radius'])
+            for food in foods[:]:
+                dx = player['pos'][0] - food[0]
+                dy = player['pos'][1] - food[1]
+                dist = math.hypot(dx, dy)
+
+                if dist < player['radius'] + FOOD_RADIUS:
+                    foods.remove(food)
+                    spawn_food()
+                    player['radius'] += 1
+
+        cam_x = players[0]['pos'][0] - SCREEN_W // 2
+        cam_y = players[0]['pos'][1] - SCREEN_H // 2
+        screen.fill((15, 20, 25))
+
+        for food in foods:
+            pygame.draw.circle(
+                screen,
+                food[2],
+                (food[0] - cam_x, food[1] - cam_y),
+                FOOD_RADIUS
+            )
+
+        for player in players:
+            draw_circle(
+                screen,
+                player['color'],
+                (player['pos'][0] - cam_x, player['pos'][1] - cam_y),
+                player['radius']
+            )
+
         draw_text(screen, f"jugadores: {num_players}", font_med, (255, 255, 255), (20, 20))
 
     pygame.display.flip()
