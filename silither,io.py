@@ -72,8 +72,70 @@ def draw_background(surface):
         b = int(20 + (50 - 20) * ratio)
         pygame.draw.line(surface, (r, g, b), (0, y), (SCREEN_W, y))
 
+def bot_ai(player, players, foods):
+    px, py = player['pos']
+
+    target = None
+    min_dist = float("inf")
+
+    for food in foods:
+        dist = (px - food[0])**2 + (py - food[1])**2
+        if dist < min_dist:
+            min_dist = dist
+            target = food
+
+    dx, dy = 0, 0
+
+    if target:
+        dx = target[0] - px
+        dy = target[1] - py
+
+    margin = 200
+
+    if px < margin:
+        dx += 1
+    if px > WORLD_W - margin:
+        dx -= 1
+    if py < margin:
+        dy += 1
+    if py > WORLD_H - margin:
+        dy -= 1
+
+    for other in players:
+        if other == player:
+            continue
+
+        for seg in list(other['history'])[::4]:  
+            dist = math.hypot(px - seg[0], py - seg[1])
+            if dist < 80:
+                dx += (px - seg[0])
+                dy += (py - seg[1])
+
+    return dx, dy
 def draw_circle(surface, color, pos, radius):
     pygame.draw.circle(surface, color, pos, radius)
+
+def check_collisions(players):
+    dead_players = []
+
+    for player in players:
+        hx, hy = player['pos']
+
+        for other in players:
+            if other == player:
+                continue
+
+            for seg in list(other['history'])[::2]:
+                dist = math.hypot(hx - seg[0], hy - seg[1])
+
+                if dist < HEAD_RADIUS:
+                    dead_players.append(player)
+                    break
+
+            if player in dead_players:
+                break
+
+    return dead_players
 
 def draw_text(surface, text, font, color, pos):
     label = font.render(text, True, color)
@@ -228,11 +290,20 @@ def update_player(player, dx, dy, dt):
     if abs(dx) > 0 or abs(dy) > 0:
         length = math.hypot(dx, dy)
         nx, ny = dx / length, dy / length
-        player['angle'] = math.atan2(ny, nx)
+
+        target_angle = math.atan2(ny, nx)
+
+        diff = target_angle - player['angle']
+
+        diff = (diff + math.pi) % (2 * math.pi) - math.pi
+
+        turn_speed = 4.0 
+
+        player['angle'] += diff * min(1, turn_speed * dt)
 
         move = speed * dt
-        new_x = player['pos'][0] + nx * move
-        new_y = player['pos'][1] + ny * move
+        new_x = player['pos'][0] + math.cos(player['angle']) * move
+        new_y = player['pos'][1] + math.sin(player['angle']) * move
 
 
         new_x = max(BORDER_THICKNESS + HEAD_RADIUS,
@@ -305,7 +376,6 @@ def draw_world_border(surface, cam_x, cam_y):
     pygame.draw.rect(surface, (180, 50, 50),
     (WORLD_W - BORDER_THICKNESS - cam_x, 0 - cam_y, BORDER_THICKNESS, WORLD_H))
 
-    # Glow / inner highlight
     glow = (220, 80, 80)
     t = BORDER_THICKNESS
     pygame.draw.rect(surface, glow,
@@ -334,28 +404,23 @@ def draw_grid(surface, cam_x, cam_y):
 
 def draw_minimap(surface, players, foods):
     """Draw a small overview minimap in the corner."""
-    # Background
     mini_surf = pygame.Surface((MINI_W, MINI_H), pygame.SRCALPHA)
     mini_surf.fill((0, 0, 0, 160))
 
-    # Border of minimap
     pygame.draw.rect(mini_surf, (80, 200, 80), (0, 0, MINI_W, MINI_H), 2)
 
-    # Food dots (tiny)
     for food in foods:
         mx = int(food[0] * MINI_SCALE_X)
         my = int(food[1] * MINI_SCALE_Y)
         mini_surf.set_at((max(0, min(MINI_W-1, mx)), max(0, min(MINI_H-1, my))),
                           food[2])
 
-    # Players
     for player in players:
         mx = int(player['pos'][0] * MINI_SCALE_X)
         my = int(player['pos'][1] * MINI_SCALE_Y)
         pygame.draw.circle(mini_surf, player['color'], (mx, my), 4)
         pygame.draw.circle(mini_surf, (255, 255, 255), (mx, my), 4, 1)
 
-    # Viewport rectangle
     cam_x = players[0]['pos'][0] - SCREEN_W // 2
     cam_y = players[0]['pos'][1] - SCREEN_H // 2
     vx = int(cam_x * MINI_SCALE_X)
@@ -367,12 +432,9 @@ def draw_minimap(surface, players, foods):
 
     surface.blit(mini_surf, (MINI_X, MINI_Y))
 
-    # Label
     label = font_sm.render("MAPA", True, (0, 220, 0))
     surface.blit(label, (MINI_X + 4, MINI_Y - 18))
 
-
-# ─── GAME STATE ───────────────────────────────────────────────────────────────
 game_state       = "menu"
 num_players      = 1
 game_initialized = False
@@ -382,8 +444,6 @@ running = True
 while running:
     dt = clock.tick(60) / 1000.0
     keys, mouse_pos, mouse_click, running = handle_input()
-
-    # ── MENU ──────────────────────────────────────────────────────────────────
     if game_state == "menu":
         title_anim_t += dt
         update_menu_snake(dt)
@@ -391,8 +451,6 @@ while running:
         if action == "play":
             pygame.event.clear()
             game_state = "player_select"
-
-    # ── PLAYER SELECT ─────────────────────────────────────────────────────────
     elif game_state == "player_select":
         action = draw_player_select_menu(screen, mouse_pos, mouse_click)
         if action == "1":
@@ -403,40 +461,50 @@ while running:
             pygame.event.clear()
             num_players = 2
             game_state = "game"
-
-    # ── GAME ──────────────────────────────────────────────────────────────────
     elif game_state == "game":
-
-        # ── INIT ──────────────────────────────────────────────────────────────
         if not game_initialized:
             players = []
             colors = [(0, 220, 0), (220, 0, 0), (0, 80, 220)]
-            for i in range(num_players):
-                players.append(make_player(i, colors[i % len(colors)]))
+            TOTAL_PLAYERS = 6  
+            for i in range(TOTAL_PLAYERS):
+                p = make_player(i, colors[i % len(colors)])
+                if i < num_players:
+                    p['is_bot'] = False
+                else:
+                    p['is_bot'] = True
+
+                players.append(p)
 
             foods.clear()
             for _ in range(FOOD_AMOUNT):
                 spawn_food()
 
             game_initialized = True
-
-        # ── INPUT & MOVEMENT ──────────────────────────────────────────────────
         for i, player in enumerate(players):
-            dx, dy = 0, 0
-            if i == 0:
-                if keys[pygame.K_a]: dx -= 1
-                if keys[pygame.K_d]: dx += 1
-                if keys[pygame.K_w]: dy -= 1
-                if keys[pygame.K_s]: dy += 1
-            elif i == 1:
-                if keys[pygame.K_LEFT]:  dx -= 1
-                if keys[pygame.K_RIGHT]: dx += 1
-                if keys[pygame.K_UP]:    dy -= 1
-                if keys[pygame.K_DOWN]:  dy += 1
+
+            if player.get('is_bot'):
+                dx, dy = bot_ai(player, players, foods)
+
+            else:
+                dx, dy = 0, 0
+
+                if i == 0:
+                    if keys[pygame.K_a]: dx -= 1
+                    if keys[pygame.K_d]: dx += 1
+                    if keys[pygame.K_w]: dy -= 1
+                    if keys[pygame.K_s]: dy += 1
+
+                elif i == 1:
+                    if keys[pygame.K_LEFT]:  dx -= 1
+                    if keys[pygame.K_RIGHT]: dx += 1
+                    if keys[pygame.K_UP]:    dy -= 1
+                    if keys[pygame.K_DOWN]:  dy += 1
 
             update_player(player, dx, dy, dt)
-
-        # ── FOOD COLLISION ────────────────────────────────────────────────────
+        dead = check_collisions(players)
+        for p in dead:
+            if p in players:
+                players.remove(p)
         for player in players:
             head_x, head_y = player['pos']
             eat_radius = HEAD_RADIUS + FOOD_RADIUS
@@ -445,45 +513,36 @@ while running:
                 if dist < eat_radius:
                     foods.remove(food)
                     spawn_food()
-                    # Grow: add one segment
                     player['segments'] += 1
-                    # Extend history capacity so new segment has room
                     new_max = player['segments'] * 2 + 20
                     old_list = list(player['history'])
                     player['history'] = deque(old_list, maxlen=new_max)
 
-        # ── CAMERA (centered on player 1) ─────────────────────────────────────
         cam_x = players[0]['pos'][0] - SCREEN_W // 2
         cam_y = players[0]['pos'][1] - SCREEN_H // 2
 
-        # ── DRAW ──────────────────────────────────────────────────────────────
         screen.fill((12, 18, 14))
         draw_grid(screen, cam_x, cam_y)
         draw_world_border(screen, cam_x, cam_y)
 
-        # Food
         for food in foods:
             sx = int(food[0] - cam_x)
             sy = int(food[1] - cam_y)
             if -FOOD_RADIUS < sx < SCREEN_W + FOOD_RADIUS and \
                -FOOD_RADIUS < sy < SCREEN_H + FOOD_RADIUS:
                 pygame.draw.circle(screen, food[2], (sx, sy), FOOD_RADIUS)
-                # Glint
                 pygame.draw.circle(screen, (255, 255, 255),
                                    (sx - 2, sy - 2), max(1, FOOD_RADIUS // 3))
 
-        # Snakes
         for player in players:
             draw_snake(screen, player, cam_x, cam_y)
 
-        # HUD
         draw_text(screen, f"Segmentos: {players[0]['segments']}", font_med,
             (200, 255, 200), (20, 20))
         if num_players == 2:
             draw_text(screen, f"J2 segs: {players[1]['segments']}", font_med,
             (255, 180, 180), (20, 50))
 
-        # Minimap
         draw_minimap(screen, players, foods)
 
     pygame.display.flip()
