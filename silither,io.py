@@ -72,46 +72,44 @@ def draw_background(surface):
         b = int(20 + (50 - 20) * ratio)
         pygame.draw.line(surface, (r, g, b), (0, y), (SCREEN_W, y))
 
-def bot_ai(player, players, foods):
+def bot_ai(player, players, foods, dt):
     px, py = player['pos']
 
-    target = None
-    min_dist = float("inf")
+    # ⏱ mantener objetivo por un tiempo
+    player['target_timer'] -= dt
 
-    for food in foods:
-        dist = (px - food[0])**2 + (py - food[1])**2
-        if dist < min_dist:
-            min_dist = dist
-            target = food
+    if player['target_food'] is None or player['target_timer'] <= 0:
+        player['target_food'] = min(
+            foods,
+            key=lambda f: (px - f[0])**2 + (py - f[1])**2
+        )
+        player['target_timer'] = random.uniform(1.0, 2.5)
 
-    dx, dy = 0, 0
+    target = player['target_food']
 
-    if target:
-        dx = target[0] - px
-        dy = target[1] - py
+    dx = target[0] - px
+    dy = target[1] - py
 
-    margin = 200
+    dist = math.hypot(dx, dy)
 
-    if px < margin:
-        dx += 1
-    if px > WORLD_W - margin:
-        dx -= 1
-    if py < margin:
-        dy += 1
-    if py > WORLD_H - margin:
-        dy -= 1
+    if dist < 50:
+        return 0
 
-    for other in players:
-        if other == player:
-            continue
+    target_angle = math.atan2(dy, dx)
 
-        for seg in list(other['history'])[::4]:  
-            dist = math.hypot(px - seg[0], py - seg[1])
-            if dist < 80:
-                dx += (px - seg[0])
-                dy += (py - seg[1])
+    diff = target_angle - player['angle']
+    diff = (diff + math.pi) % (2 * math.pi) - math.pi
 
-    return dx, dy
+    # zona muerta
+    if abs(diff) < 0.2:
+        return 0
+
+    # limitar giro brusco
+    if diff > 0:
+        return 1
+    else:
+        return -1
+
 def draw_circle(surface, color, pos, radius):
     pygame.draw.circle(surface, color, pos, radius)
 
@@ -128,7 +126,7 @@ def check_collisions(players):
             for seg in list(other['history'])[::2]:
                 dist = math.hypot(hx - seg[0], hy - seg[1])
 
-                if dist < HEAD_RADIUS:
+                if dist < HEAD_RADIUS + 6:
                     dead_players.append(player)
                     break
 
@@ -260,8 +258,9 @@ def draw_player_select_menu(surface, mouse_pos, mouse_click):
 
 def make_player(index, color):
     """Create a player dict with segment history."""
-    cx = WORLD_W // 2 + index * 150
-    cy = WORLD_H // 2
+    margin = 200
+    cx = random.randint(margin, WORLD_W - margin)
+    cy = random.randint(margin, WORLD_H - margin)
     history = deque()
     for _ in range(80):
         history.append((float(cx), float(cy)))
@@ -273,6 +272,7 @@ def make_player(index, color):
         'history':  history,
         'dist_acc': 0.0,
         'speed':    200.0,
+        
     }
 
 
@@ -283,42 +283,35 @@ def player_body_radius(player, seg_idx):
     return max(4, int(HEAD_RADIUS * (1.0 - 0.45 * t)))
 
 
-def update_player(player, dx, dy, dt):
-    """Move player, record history, clamp to world bounds."""
+def update_player(player, turn, dt):
+    turn_speed = 3.5  # velocidad de giro
+
+    # girar
+    player['angle'] += turn * turn_speed * dt
+
+    # mover siempre hacia adelante
     speed = player['speed']
+    move = speed * dt
 
-    if abs(dx) > 0 or abs(dy) > 0:
-        length = math.hypot(dx, dy)
-        nx, ny = dx / length, dy / length
+    new_x = player['pos'][0] + math.cos(player['angle']) * move
+    new_y = player['pos'][1] + math.sin(player['angle']) * move
 
-        target_angle = math.atan2(ny, nx)
+    # límites del mapa
+    new_x = max(BORDER_THICKNESS + HEAD_RADIUS,
+                min(WORLD_W - BORDER_THICKNESS - HEAD_RADIUS, new_x))
+    new_y = max(BORDER_THICKNESS + HEAD_RADIUS,
+                min(WORLD_H - BORDER_THICKNESS - HEAD_RADIUS, new_y))
 
-        diff = target_angle - player['angle']
+    # historial
+    player['dist_acc'] += math.hypot(new_x - player['pos'][0],
+                                    new_y - player['pos'][1])
 
-        diff = (diff + math.pi) % (2 * math.pi) - math.pi
+    player['pos'][0] = new_x
+    player['pos'][1] = new_y
 
-        turn_speed = 4.0 
-
-        player['angle'] += diff * min(1, turn_speed * dt)
-
-        move = speed * dt
-        new_x = player['pos'][0] + math.cos(player['angle']) * move
-        new_y = player['pos'][1] + math.sin(player['angle']) * move
-
-
-        new_x = max(BORDER_THICKNESS + HEAD_RADIUS,
-                    min(WORLD_W - BORDER_THICKNESS - HEAD_RADIUS, new_x))
-        new_y = max(BORDER_THICKNESS + HEAD_RADIUS,
-                    min(WORLD_H - BORDER_THICKNESS - HEAD_RADIUS, new_y))
-
-        player['dist_acc'] += math.hypot(new_x - player['pos'][0],
-        new_y - player['pos'][1])
-        player['pos'][0] = new_x
-        player['pos'][1] = new_y
-
-        while player['dist_acc'] >= SEGMENT_SPACING:
-            player['dist_acc'] -= SEGMENT_SPACING
-            player['history'].appendleft((player['pos'][0], player['pos'][1]))
+    while player['dist_acc'] >= SEGMENT_SPACING:
+        player['dist_acc'] -= SEGMENT_SPACING
+        player['history'].appendleft((player['pos'][0], player['pos'][1]))
 
 
 def draw_snake(surface, player, cam_x, cam_y):
@@ -379,13 +372,13 @@ def draw_world_border(surface, cam_x, cam_y):
     glow = (220, 80, 80)
     t = BORDER_THICKNESS
     pygame.draw.rect(surface, glow,
-                     (0 - cam_x, 0 - cam_y, WORLD_W, t), 3)
+                    (0 - cam_x, 0 - cam_y, WORLD_W, t), 3)
     pygame.draw.rect(surface, glow,
-                     (0 - cam_x, WORLD_H - t - cam_y, WORLD_W, t), 3)
+                    (0 - cam_x, WORLD_H - t - cam_y, WORLD_W, t), 3)
     pygame.draw.rect(surface, glow,
-                     (0 - cam_x, 0 - cam_y, t, WORLD_H), 3)
+                    (0 - cam_x, 0 - cam_y, t, WORLD_H), 3)
     pygame.draw.rect(surface, glow,
-                     (WORLD_W - t - cam_x, 0 - cam_y, t, WORLD_H), 3)
+                    (WORLD_W - t - cam_x, 0 - cam_y, t, WORLD_H), 3)
 
 
 def draw_grid(surface, cam_x, cam_y):
@@ -413,7 +406,7 @@ def draw_minimap(surface, players, foods):
         mx = int(food[0] * MINI_SCALE_X)
         my = int(food[1] * MINI_SCALE_Y)
         mini_surf.set_at((max(0, min(MINI_W-1, mx)), max(0, min(MINI_H-1, my))),
-                          food[2])
+                        food[2])
 
     for player in players:
         mx = int(player['pos'][0] * MINI_SCALE_X)
@@ -428,7 +421,7 @@ def draw_minimap(surface, players, foods):
     vw = int(SCREEN_W * MINI_SCALE_X)
     vh = int(SCREEN_H * MINI_SCALE_Y)
     pygame.draw.rect(mini_surf, (255, 255, 100),
-                     (vx, vy, vw, vh), 1)
+                    (vx, vy, vw, vh), 1)
 
     surface.blit(mini_surf, (MINI_X, MINI_Y))
 
@@ -482,25 +475,27 @@ while running:
             game_initialized = True
         for i, player in enumerate(players):
 
+            # BOT
             if player.get('is_bot'):
-                dx, dy = bot_ai(player, players, foods)
+                turn = bot_ai(player, players, foods, dt)
 
+            # JUGADOR
             else:
-                dx, dy = 0, 0
+                turn = 0
 
                 if i == 0:
-                    if keys[pygame.K_a]: dx -= 1
-                    if keys[pygame.K_d]: dx += 1
-                    if keys[pygame.K_w]: dy -= 1
-                    if keys[pygame.K_s]: dy += 1
+                    if keys[pygame.K_a]:
+                        turn -= 1
+                    if keys[pygame.K_d]:
+                        turn += 1
 
                 elif i == 1:
-                    if keys[pygame.K_LEFT]:  dx -= 1
-                    if keys[pygame.K_RIGHT]: dx += 1
-                    if keys[pygame.K_UP]:    dy -= 1
-                    if keys[pygame.K_DOWN]:  dy += 1
+                    if keys[pygame.K_LEFT]:
+                        turn -= 1
+                    if keys[pygame.K_RIGHT]:
+                        turn += 1
 
-            update_player(player, dx, dy, dt)
+            update_player(player, turn, dt)
         dead = check_collisions(players)
         for p in dead:
             if p in players:
@@ -518,8 +513,11 @@ while running:
                     old_list = list(player['history'])
                     player['history'] = deque(old_list, maxlen=new_max)
 
-        cam_x = players[0]['pos'][0] - SCREEN_W // 2
-        cam_y = players[0]['pos'][1] - SCREEN_H // 2
+        if players:
+            cam_x = players[0]['pos'][0] - SCREEN_W // 2
+            cam_y = players[0]['pos'][1] - SCREEN_H // 2
+        else:
+            cam_x, cam_y = 0, 0
 
         screen.fill((12, 18, 14))
         draw_grid(screen, cam_x, cam_y)
@@ -529,10 +527,10 @@ while running:
             sx = int(food[0] - cam_x)
             sy = int(food[1] - cam_y)
             if -FOOD_RADIUS < sx < SCREEN_W + FOOD_RADIUS and \
-               -FOOD_RADIUS < sy < SCREEN_H + FOOD_RADIUS:
+            -FOOD_RADIUS < sy < SCREEN_H + FOOD_RADIUS:
                 pygame.draw.circle(screen, food[2], (sx, sy), FOOD_RADIUS)
                 pygame.draw.circle(screen, (255, 255, 255),
-                                   (sx - 2, sy - 2), max(1, FOOD_RADIUS // 3))
+                                (sx - 2, sy - 2), max(1, FOOD_RADIUS // 3))
 
         for player in players:
             draw_snake(screen, player, cam_x, cam_y)
